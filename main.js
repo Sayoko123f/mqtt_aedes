@@ -1,96 +1,86 @@
 const aedes = require("aedes")();
 const server = require("net").createServer(aedes.handle);
-const fs = require("fs");
-const path = require("path");
+const { topic, remoteParser, remoteHandler } = require("./src/topic.js");
+const { Camera } = require("./src/camera.js");
+const { infiniteLoop } = require("./src/utils.js");
+const { ricky } = require("./src/image_provider.js");
+
 const port = 1883;
+const camera = new Camera();
 
-const cat = fs.readFileSync("rainbow-cat.gif");
+main();
 
-const filenames = fs.readdirSync(path.resolve("jpg"));
-const images = filenames.map((e) => fs.readFileSync(`jpg/${e}`));
-let imagePtr = 0;
-function getImage() {
-  imagePtr %= images.length;
-  const image = images[imagePtr];
-  imagePtr++;
-  return image;
-}
+async function main() {
+  server.listen(port, function () {
+    console.log("server started and listening on port ", port);
+  });
 
-server.listen(port, function () {
-  console.log("server started and listening on port ", port);
-});
-
-server.on("connection", (socket) => {
-  console.log("connection");
-  //   wait(1500).then(() => {
-  //     aedes.publish(getSendData(), (err) => {
-  //       if (err) {
-  //         console.log("pubilsh", err);
-  //       }
-  //     });
-  //   });
-});
-
-server.on("error", (err) => {
-  console.log("error", err);
-});
-
-aedes.subscribe(
-  "test2",
-  (packet, cb) => {
-    // console.log("test2: 收到資料", packet);
+  server.on("connection", (socket) => {
     const timestamp = new Date().toLocaleTimeString();
-    const buffer = packet.payload;
-    const message = buffer.toString();
-    console.log(`[${timestamp}]: ${message}`);
-  },
-  () => {
-    console.log("server subscribe test2");
-  }
-);
+    console.log(`[${timestamp}]: new connection.`);
+  });
 
-run();
+  server.on("error", (err) => {
+    console.log("error", err);
+  });
+
+  aedes.subscribe(
+    topic('remote'),
+    (packet, cb) => {
+      const timestamp = new Date().toLocaleTimeString();
+      if (!packet.payload) {
+        console.warn(`[${timestamp}]: Invalid payload.`);
+        return;
+      }
+      const maybeJson = packet.payload.toString();
+      const maybeData = remoteParser(maybeJson);
+
+      if (!maybeData) {
+        console.warn(`[${timestamp}]: Invalid data.`);
+        return;
+      }
+      console.log(maybeData);
+      remoteHandler(maybeData, camera);
+    },
+    () => {
+      console.log(`server subscribe ${topic("remote")}.`);
+    }
+  );
+  run();
+}
 
 async function run() {
-  while (true) {
-    await wait(40);
-    aedes.publish(getSendData(), (err) => {
+  const getRicky = ricky();
+  infiniteLoop(40, () => {
+    aedes.publish(pack(topic("camera"), getRicky()), (err) => {
       if (err) {
-        console.log("pubilsh", err);
+        console.log("[ERROR]: pubilsh ricky, ", err);
       }
     });
-  }
-}
-
-async function wait(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
   });
+
+  infiniteLoop(2000, () => {
+    aedes.publish(pack(topic("cameraStatus"), camera.toJson()), (err) => {
+      if (err) {
+        console.log("[ERROR]: pubilsh ricky, ", err);
+      }
+    });
+  });
+
+  infiniteLoop(3000,()=>{
+    console.log(camera.toJson());
+  })
 }
 
-function getSendData(topic = "test") {
+/**
+ *
+ * @param {string} topic
+ * @param {any} payload
+ * @returns
+ */
+function pack(topic, payload) {
   return {
     topic,
-    cmd: "publish",
-    messageId: 42,
-    message: "Hello world",
-    data: "Hello Andrew",
-    qos: 2,
-    dup: false,
-    payload: getImage(),
-    retain: false,
-    properties: {
-      // optional properties MQTT 5.0
-      payloadFormatIndicator: true,
-      messageExpiryInterval: 4321,
-      topicAlias: 100,
-      responseTopic: "topic",
-      correlationData: Buffer.from([1, 2, 3, 4]),
-      userProperties: {
-        test: "test",
-      },
-      subscriptionIdentifier: 120, // can be an Array in message from broker, if message included in few another subscriptions
-      contentType: "test",
-    },
+    payload,
   };
 }
